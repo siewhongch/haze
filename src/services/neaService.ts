@@ -95,38 +95,50 @@ export function getPM25Band(pm25: number): { band: string; label: string; color:
 }
 
 /**
- * Fetch official NEA data from data.gov.sg
+ * Fetch official NEA data via /api/psi or direct data.gov.sg v2 endpoint
  */
 export async function fetchLiveNEAData(): Promise<PSIResponse> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
 
+  // Try serverless endpoint /api/psi first
   try {
-    const res = await fetch('https://api.data.gov.sg/v1/environment/psi', {
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!res.ok) {
-      throw new Error(`Data.gov.sg returned HTTP ${res.status}`);
+    const apiRes = await fetch('/api/psi', { signal: controller.signal });
+    if (apiRes.ok) {
+      const serverlessData = await apiRes.json();
+      clearTimeout(timeoutId);
+      if (serverlessData.readings) {
+        return parseReadingsPayload(
+          serverlessData.readings,
+          serverlessData.updatedTimestamp || serverlessData.timestamp
+        );
+      }
     }
-
-    const data = await res.json();
-    return parseDataGovSgResponse(data);
   } catch (err) {
-    console.warn('Direct NEA API fetch failed or timed out, returning synchronized baseline:', err);
-    return getSyntheticScenario('live_baseline');
+    console.debug('Local /api/psi call not ready, falling back to direct data.gov.sg endpoint:', err);
   }
+
+  // Direct fallback to data.gov.sg v2 endpoint
+  try {
+    const directRes = await fetch('https://api-open.data.gov.sg/v2/real-time/api/psi');
+    if (directRes.ok) {
+      const data = await directRes.json();
+      const item = data?.data?.items?.[0];
+      if (item?.readings) {
+        return parseReadingsPayload(item.readings, item.updatedTimestamp || item.timestamp);
+      }
+    }
+  } catch (err) {
+    console.warn('Direct data.gov.sg v2 call failed:', err);
+  }
+
+  return getSyntheticScenario('live_baseline');
 }
 
-// Parse live response from data.gov.sg/v1/environment/psi
-function parseDataGovSgResponse(apiResponse: any): PSIResponse {
-  const readingItem = apiResponse?.items?.[0];
-  const readings = readingItem?.readings || {};
-  const timestamp = readingItem?.update_timestamp || new Date().toISOString();
-
+// Unified parser for NEA readings dictionary
+function parseReadingsPayload(readings: any, timestampStr: string): PSIResponse {
+  const timestamp = timestampStr || new Date().toISOString();
   const regionsList: SingaporeRegion[] = ['central', 'north', 'south', 'east', 'west'];
-
   const regionsData: Partial<Record<SingaporeRegion, RegionData>> = {};
   let totalPsi = 0;
 
@@ -144,9 +156,9 @@ function parseDataGovSgResponse(apiResponse: any): PSIResponse {
         lng: REGION_COORDINATES[r].lng,
       },
       psi,
-      pm25_1h: Math.round(readings?.pm25_one_hourly?.[r] ?? (psi * 0.35)),
-      pm25_24h: Math.round(readings?.pm25_twenty_four_hourly?.[r] ?? (psi * 0.32)),
-      pm10_24h: Math.round(readings?.pm10_twenty_four_hourly?.[r] ?? (psi * 0.55)),
+      pm25_1h: Math.round(readings?.pm25_one_hourly?.[r] ?? readings?.pm25_twenty_four_hourly?.[r] ?? Math.round(psi * 0.7)),
+      pm25_24h: Math.round(readings?.pm25_twenty_four_hourly?.[r] ?? Math.round(psi * 0.65)),
+      pm10_24h: Math.round(readings?.pm10_twenty_four_hourly?.[r] ?? Math.round(psi * 0.85)),
       o3_8h: Math.round(readings?.o3_eight_hour_max?.[r] ?? 38),
       no2_1h: Math.round(readings?.no2_one_hour_max?.[r] ?? 24),
       so2_24h: Math.round(readings?.so2_twenty_four_hourly?.[r] ?? 12),
@@ -167,9 +179,9 @@ function parseDataGovSgResponse(apiResponse: any): PSIResponse {
     displayName: 'National Average',
     coordinates: { lat: 1.3521, lng: 103.8198 },
     psi: nationalPsi,
-    pm25_1h: Math.round(readings?.pm25_one_hourly?.national ?? (nationalPsi * 0.35)),
-    pm25_24h: Math.round(readings?.pm25_twenty_four_hourly?.national ?? (nationalPsi * 0.32)),
-    pm10_24h: Math.round(readings?.pm10_twenty_four_hourly?.national ?? (nationalPsi * 0.55)),
+    pm25_1h: Math.round(readings?.pm25_one_hourly?.national ?? (nationalPsi * 0.7)),
+    pm25_24h: Math.round(readings?.pm25_twenty_four_hourly?.national ?? (nationalPsi * 0.65)),
+    pm10_24h: Math.round(readings?.pm10_twenty_four_hourly?.national ?? (nationalPsi * 0.85)),
     o3_8h: Math.round(readings?.o3_eight_hour_max?.national ?? 35),
     no2_1h: Math.round(readings?.no2_one_hour_max?.national ?? 22),
     so2_24h: Math.round(readings?.so2_twenty_four_hourly?.national ?? 11),
@@ -190,11 +202,13 @@ function parseDataGovSgResponse(apiResponse: any): PSIResponse {
       windDirection: 'South-Southwest (SSW)',
       temperatureC: 31,
       relativeHumidity: 74,
-      hotspotsSumatra: 18,
-      generalHazeRisk: 'Low',
+      hotspotsSumatra: 28,
+      generalHazeRisk: nationalPsi > 100 ? 'High' : 'Low',
     },
   };
 }
+
+
 
 export type PresetScenario = 'live_baseline' | 'moderate' | 'unhealthy_haze' | 'very_unhealthy' | 'hazardous';
 
