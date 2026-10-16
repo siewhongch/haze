@@ -1,0 +1,6 @@
+{
+  "name": "BreezeSG - Singapore Air Quality & PSI Live Tracker",
+  "description": "Real-time Singapore PSI air quality tracker with interactive regional map, pollutant analytics, health advisories, and push notification alerts.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
